@@ -1,6 +1,6 @@
 # Lanceur — stack technique (document de référence)
 
-Version 0.1.0, v1 livrée vite (consigne du 24/11) : pas encore d'audit ponytail ni d'EGM.
+Version 0.1.1, v1 livrée vite (consigne du 24/11) : pas encore d'audit ponytail ni d'EGM.
 
 ## 1. But et direction
 - **Rôle** : une barre centrale ouverte par **Alt+Espace** (remplace le menu système de fenêtre). On tape 2 lettres, Entrée.
@@ -38,7 +38,7 @@ Thème du socle (crème / bleu nuit selon Windows), carte arrondi 10, champ 20 p
 - Réglages `%APPDATA%\Lanceur\settings.json` : `demarrage`, `appris` (usage par clé, dernier choix par requête), `snippets` (`;nom` → texte copié), `derniere` (pour `!`). Cache `%LOCALAPPDATA%\Lanceur\taux-bce.xml`.
 - Clavier : ↑↓, Entrée, Maj+Entrée (dossier), Tab (compléter), Échap (vider puis fermer). Une action risquée (veille, tuer, mode jeu, couper un serveur) demande Entrée deux fois.
 - Processus externes sans console (`CREATE_NO_WINDOW`) et avec délai ; tuer un processus : chemin de l'exe revérifié sur la poignée.
-- Mode test (§0) : ni raccourci global, ni icône, ni clé Run ; fenêtre créée inactive, opacité 0 avant d'apparaître.
+- Mode test (§0) : ni raccourci global, ni icône, ni clé Run, ni instance unique (jamais de message à la vraie instance) ; fenêtre créée inactive, opacité 0 avant d'apparaître.
 
 ## 6. Fonctionnalités
 Base (apps, jeux, fichiers, Maj+Entrée), classement appris, calcul/conversions/devises/couleurs, commandes Windows, préfixes `g yt gh`, branchements `y v k ram mode jeu p bilan`, dev `d <projet> [t|gh]`, `;snippets`, `:port`, `c` (sessions Claude Code reprises par `claude --resume` dans Windows Terminal), actions sur la sélection, clavier AZERTY↔QWERTY, `!`, `--action`. Mise à jour par `socle::update` (une ligne « Mettre à jour » apparaît dans la barre vide).
@@ -47,10 +47,10 @@ Intégrations (règle 4, masquées si absentes) :
 | Préfixe | App | Condition |
 |---|---|---|
 | `y` | `Tube.exe "<texte>"` | exe présent |
-| `v` | `Memoire.exe --chercher "<t>" --json`, `--copier <id>` | marqueur `MemoireCli` contient `chercher` (**CLI demandée, pas encore faite**) |
+| `v` | `Memoire.exe --chercher "<t>" --json`, `--copier <id>` | marqueur `MemoireCli` contient `chercher` (Mémoire ≥ 0.2.1 ; les secrets n'y apparaissent jamais) |
 | `k`, `ram` | `Vigie.exe --etat-dev`, `--couper-dev --seulement <cle>` | `VigieCli` contient `etat-dev couper-dev` ; sinon `k :port` en direct |
 | `mode jeu` | `Vigie.exe --avant-jeu` / `--apres-jeu` | exe présent |
-| `bilan` | `Bilan.exe --resume` | marqueur `BilanCli` contient `resume` (**CLI demandée, pas encore faite**) |
+| `bilan` | `Bilan.exe --resume` | marqueur `BilanCli` contient `resume` (Bilan ≥ 0.1.2) |
 | `c` | `claude.exe` (PATH ou `%APPDATA%\Claude\claude-code\…`) | exe trouvé |
 
 ## 7. Mesures (24/11, i9-9900K, mode test invisible)

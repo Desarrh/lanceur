@@ -343,7 +343,7 @@ fn main() {
     // ouverte si elle existe (son index est chaud), sinon fait ici puis quitte.
     if let Some(i) = args.iter().position(|a| a == "--action") {
         let q = args.get(i + 1).cloned().unwrap_or_default();
-        if let socle::instance::Start::Forwarded = socle::instance::start(app::APP, &["--action".into(), q.clone()]) {
+        if !socle::testmode::enabled() && let socle::instance::Start::Forwarded = socle::instance::start(app::APP, &["--action".into(), q.clone()]) {
             return;
         }
         let mut s = app::Settings::load();
@@ -372,7 +372,9 @@ fn main() {
     let after_update = socle::update::is_after_update();
     // Déjà lancé : le 2e lancement ouvre la barre de l'instance existante.
     let mut instance = None;
-    match socle::instance::start(app::APP, &args) {
+    // Règle n° 0 : une instance de test ne parle jamais à la vraie (elle lui ferait ouvrir la barre).
+    let start = if socle::testmode::enabled() { socle::instance::Start::Alone } else { socle::instance::start(app::APP, &args) };
+    match start {
         socle::instance::Start::Forwarded if !after_update => return,
         socle::instance::Start::Primary(i) => instance = Some(i),
         _ => {}

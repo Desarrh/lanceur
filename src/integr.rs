@@ -292,6 +292,9 @@ pub fn executer(a: &Action) -> Result<Option<String>, String> {
             let a: Vec<&str> = args.iter().map(String::as_str).collect();
             let (code, out) = sysw::run_capture(Path::new(exe), &a, Duration::from_secs(15))?;
             let l = ligne(&out);
+            if code != 0 && args.first().map(String::as_str) == Some("--copier") {
+                return Err("Mémoire n'a pas copié cet élément (protégé ou disparu)".into());
+            }
             if code != 0 && l.is_empty() {
                 return Err(format!("échec (code {code})"));
             }

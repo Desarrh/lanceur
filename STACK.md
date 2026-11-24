@@ -60,9 +60,9 @@ Intégrations (règle 4, masquées si absentes) :
 | Recherche apps/jeux/commandes | 0,1 ms |
 | Recherche fichiers (517 121 entrées, index de l'Explorateur filtré) | 4 à 6,5 ms (en fond, ajoutée après) |
 | `--action` sans instance ouverte | 150 ms |
-| RAM privée (index de fichiers chargé) | 65,6 Mo |
+| RAM privée (dist, en fond, index de fichiers chargé) | 55,8 Mo (65,6 Mo en mode test, barre ouverte) |
 | Exe release | 5,6 Mo |
-| CPU au repos | non mesuré (boucle `ControlFlow::Wait`, aucun sondage) |
+| CPU au repos | 0 s de CPU en 20 s (boucle `ControlFlow::Wait`, aucun sondage) |
 
 ## 8. Limites connues
 - Non vérifiés à la main (§0 : aucune entrée simulée) : Alt+Espace réel, prise de focus, lecture de la sélection dans de vraies apps, volume/muet/sortie audio (IPolicyConfig jamais exécuté), verrouiller/veille/corbeille, menu de l'icône.

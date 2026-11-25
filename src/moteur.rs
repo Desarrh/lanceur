@@ -24,6 +24,7 @@ pub enum Ico {
     Tuer,
     Son,
     Memoire,
+    Tache,
     Jauge,
     Video,
     Repeter,
@@ -109,6 +110,10 @@ pub enum Req {
     Bilan,
     Claude,
     Sorties,
+    /// `Taches.exe --comprendre "<texte>" --json` : aperçu de la tâche qui sera ajoutée.
+    TachesComprendre(String),
+    /// `Taches.exe --lister … --json` : `None` = Ma journée, `Some(t)` = recherche dans tout.
+    TachesLister(Option<String>),
 }
 
 /// Apps maison trouvées, avec ce que leur CLI sait faire (règle 4 : absente = entrée masquée).
@@ -122,6 +127,9 @@ pub struct Apps {
     pub memoire_cherche: bool,
     pub bilan: Option<PathBuf>,
     pub bilan_resume: bool,
+    pub taches: Option<PathBuf>,
+    /// `TachesCli` contient `ajouter comprendre lister cocher`.
+    pub taches_cli: bool,
     pub code: Option<PathBuf>,
     pub wt: Option<PathBuf>,
     pub claude: Option<PathBuf>,
@@ -416,6 +424,7 @@ fn requete_(q: &str, cx: &Ctx, reqs: &mut Vec<Req>) -> Vec<Res> {
             let v = asyncs(cx, &Req::Memoire(reste.to_string()), reqs);
             return if v.is_empty() && !reqs.is_empty() { vec![Res::new(Ico::Memoire, "Mémoire : recherche…", reste, Action::Rien)] } else { v };
         }
+        "t" if (a_espace || tete == "t") && cx.apps.taches_cli => return taches(reste, cx, reqs),
         "k" if a_espace => return tuer(reste, cx, reqs),
         "p" if a_espace => {
             return trier(chercher(reste, cx, Some(Genre::Jeu), 8), reste, cx);
@@ -536,6 +545,30 @@ fn tuer(reste: &str, cx: &Ctx, reqs: &mut Vec<Req>) -> Vec<Res> {
         Some(p) => port(p).into_iter().filter(|r| matches!(r.action, Action::Tuer { .. })).collect(),
         None => vec![Res::new(Ico::Tuer, "Aucun serveur de dev trouvé", if cx.apps.vigie_dev { "d'après Vigie" } else { "Vigie absente : tape « k :port »" }, Action::Rien)],
     }
+}
+
+/// `t` : Ma journée ; `t <texte>` : ajouter (avec l'aperçu de ce que Tâches comprend) et chercher.
+fn taches(reste: &str, cx: &Ctx, reqs: &mut Vec<Req>) -> Vec<Res> {
+    let Some(exe) = &cx.apps.taches else { return vec![] };
+    let e = exe.to_string_lossy().into_owned();
+    let mut v = vec![];
+    if !reste.is_empty() {
+        let apercu = asyncs(cx, &Req::TachesComprendre(reste.to_string()), reqs);
+        let (titre, sous) = match apercu.first() {
+            Some(a) => (format!("Ajouter : {}", a.titre), a.sous.clone()),
+            None => (format!("Ajouter : {reste}"), "…".to_string()),
+        };
+        let mut r = Res::new(Ico::Tache, titre, sous, Action::Sortie { exe: e.clone(), args: vec!["--ajouter".into(), reste.to_string()] });
+        r.section = Some("Nouvelle tâche".into());
+        r.alt = Some(Action::Ouvrir { cible: e.clone(), args: None, dossier: None });
+        v.push(r);
+    }
+    let liste = asyncs(cx, &Req::TachesLister((!reste.is_empty()).then(|| reste.to_string())), reqs);
+    if reste.is_empty() && liste.is_empty() && reqs.is_empty() {
+        v.push(Res::new(Ico::Tache, "Ma journée est vide", "Tape « t » puis ta tâche pour l'ajouter", Action::Rien));
+    }
+    v.extend(liste);
+    v
 }
 
 /// `d <projet> [t|gh]` : VS Code, terminal, GitHub.
@@ -692,6 +725,26 @@ mod tests {
         let (r, _) = requete("", &c);
         assert!(r.iter().any(|x| x.titre.starts_with("JSON : formater")));
         assert!(r.iter().any(|x| x.titre == "Traduire en français"));
+    }
+
+    #[test]
+    fn taches_ajout_et_liste() {
+        let mut m = monde();
+        let c = cx(&m, None);
+        // Sans le marqueur : « t » n'est pas un préfixe.
+        let (r, _) = requete("t beurre", &c);
+        assert!(r.iter().all(|x| x.ico != Ico::Tache));
+        m.apps.taches = Some(PathBuf::from("C:\\Dev\\taches\\dist\\Taches.exe"));
+        m.apps.taches_cli = true;
+        let (r, reqs) = requete("t beurre demain 18h #courses !", &cx(&m, None));
+        assert_eq!(r[0].action, Action::Sortie { exe: "C:\\Dev\\taches\\dist\\Taches.exe".into(), args: vec!["--ajouter".into(), "beurre demain 18h #courses !".into()] });
+        assert!(reqs.contains(&Req::TachesComprendre("beurre demain 18h #courses !".into())));
+        m.asyncs.insert(Req::TachesComprendre("beurre".into()), vec![Res::new(Ico::Tache, "beurre", "courses · demain 18:00 · ★", Action::Rien)]);
+        let (r, _) = requete("t beurre", &cx(&m, None));
+        assert_eq!(r[0].titre, "Ajouter : beurre");
+        assert_eq!(r[0].sous, "courses · demain 18:00 · ★");
+        let (_, reqs) = requete("t", &cx(&m, None));
+        assert_eq!(reqs, vec![Req::TachesLister(None)]);
     }
 
     #[test]

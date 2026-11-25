@@ -8,7 +8,7 @@ What it finds and does:
 - Learned ranking (frequency + recency, and your last pick for the exact same query).
 - **Calculator and conversions**: `2,5*4`, `200 + 10%`, `10 km en mi`, `100 usd en eur` (ECB rates cached daily), `#2E5E9E` (color preview).
 - **Windows commands**: lock, sleep, empty/open recycle bin, `vol 30`, mute, `sortie` (switch audio output).
-- **Prefixes**: `g` Google, `yt` YouTube, `gh` GitHub, `y` Tube, `v` Mémoire search, `k <name|:port>` stop a dev server (Vigie), `ram`, `mode jeu`, `p <game>`, `bilan`, `d <project> [t|gh]` (VS Code, terminal, GitHub), `;snippet`, `:3000` (what listens on a port: open or kill), `c` (resume a Claude Code session), `!` (repeat last action).
+- **Prefixes**: `g` Google, `yt` YouTube, `gh` GitHub, `y` Tube, `v` Mémoire search, `t` add, find or check off a task (Tâches), `k <name|:port>` stop a dev server (Vigie), `ram`, `mode jeu`, `p <game>`, `bilan`, `d <project> [t|gh]` (VS Code, terminal, GitHub), `;snippet`, `:3000` (what listens on a port: open or kill), `c` (resume a Claude Code session), `!` (repeat last action).
 - **Selected text** in the foreground app (read through UI Automation, never by simulating Ctrl+C): translate, web search, format/compact JSON, compute/convert, open link or path.
 - Wrong keyboard layout tolerated (AZERTY ↔ QWERTY).
 - Headless: `Lanceur.exe --action "<query>"` runs the first result without UI (for a Stream Deck).

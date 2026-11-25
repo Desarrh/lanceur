@@ -65,12 +65,15 @@ pub fn detecter() -> Apps {
     let vigie = existe(dev.join("vigie\\dist\\Vigie.exe"));
     let memoire = existe(dev.join("memoire\\dist\\Memoire.exe"));
     let bilan = existe(dev.join("bilan\\dist\\Bilan.exe"));
+    let taches = existe(dev.join("taches\\dist\\Taches.exe"));
     let a_mot = |exe: &Option<PathBuf>, cle: &str, mot: &str| exe.as_deref().and_then(|e| marqueur(e, cle)).is_some_and(|m| m.split_whitespace().any(|x| x == mot));
     let local = env("LOCALAPPDATA").unwrap_or_default();
     Apps {
         vigie_dev: a_mot(&vigie, "VigieCli", "etat-dev") && a_mot(&vigie, "VigieCli", "couper-dev"),
         memoire_cherche: a_mot(&memoire, "MemoireCli", "chercher"),
         bilan_resume: a_mot(&bilan, "BilanCli", "resume"),
+        taches_cli: ["ajouter", "comprendre", "lister", "cocher"].iter().all(|m| a_mot(&taches, "TachesCli", m)),
+        taches,
         tube,
         vigie,
         memoire,
@@ -104,6 +107,8 @@ pub fn faire(r: &Req, apps: &Apps) -> Vec<Res> {
         Req::Bilan => bilan(apps),
         Req::Claude => sessions_claude(apps),
         Req::Sorties => sorties(),
+        Req::TachesComprendre(t) => taches_comprendre(t, apps),
+        Req::TachesLister(q) => taches_lister(q.as_deref(), apps),
     }
 }
 
@@ -203,6 +208,63 @@ fn bilan(apps: &Apps) -> Vec<Res> {
     v
 }
 
+/// « liste · échéance · ★ · ×n » d'une tâche ou d'un aperçu JSON de Tâches.
+fn infos_tache(j: &serde_json::Value) -> String {
+    let mut v: Vec<String> = vec![];
+    if let Some(l) = j.get("liste").and_then(|x| x.as_str()).filter(|l| !l.is_empty()) {
+        v.push(l.to_string());
+    }
+    if let Some(e) = j.get("echeance").and_then(|x| x.as_str()) {
+        v.push(e.to_string());
+    }
+    if j.get("important").and_then(|x| x.as_bool()) == Some(true) {
+        v.push("★ important".into());
+    }
+    if let Some(n) = j.get("compteur").and_then(|x| x.as_u64()) {
+        v.push(format!("×{n}"));
+    }
+    v.join(" · ")
+}
+
+fn taches_comprendre(t: &str, apps: &Apps) -> Vec<Res> {
+    let Some(exe) = &apps.taches else { return vec![] };
+    let Ok((0, out)) = sysw::run_capture(exe, &["--comprendre", t, "--json"], Duration::from_millis(800)) else { return vec![] };
+    let Ok(j) = serde_json::from_str::<serde_json::Value>(&ligne(&out)) else { return vec![] };
+    let titre = j.get("titre").and_then(|x| x.as_str()).unwrap_or(t).to_string();
+    let infos = infos_tache(&j);
+    vec![Res::new(Ico::Tache, titre, if infos.is_empty() { "Ma journée".into() } else { infos }, Action::Rien)]
+}
+
+fn taches_lister(q: Option<&str>, apps: &Apps) -> Vec<Res> {
+    let Some(exe) = &apps.taches else { return vec![] };
+    let mut a = vec!["--lister", if q.is_some() { "tout" } else { "ma-journee" }, "--json", "--max", "20"];
+    if let Some(q) = q {
+        a.extend(["--chercher", q]);
+    }
+    let Ok((0, out)) = sysw::run_capture(exe, &a, Duration::from_millis(1500)) else { return vec![] };
+    let Ok(j) = serde_json::from_str::<serde_json::Value>(&ligne(&out)) else { return vec![] };
+    let e = exe.to_string_lossy().into_owned();
+    j.get("taches")
+        .and_then(|t| t.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|t| {
+                    let id = match t.get("id")? {
+                        serde_json::Value::String(s) => s.clone(),
+                        x => x.to_string(),
+                    };
+                    let titre = t.get("titre")?.as_str()?.to_string();
+                    let infos = infos_tache(t);
+                    let mut r = Res::new(Ico::Tache, titre, if infos.is_empty() { "Entrée coche".to_string() } else { format!("{infos} · Entrée coche") }, Action::Sortie { exe: e.clone(), args: vec!["--cocher".into(), id] });
+                    r.alt = Some(Action::Ouvrir { cible: e.clone(), args: None, dossier: None });
+                    r.section = Some(if q.is_some() { "Tâches trouvées" } else { "Ma journée" }.into());
+                    Some(r)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn sorties() -> Vec<Res> {
     match crate::audio::outputs() {
         Ok(d) => d
@@ -297,6 +359,11 @@ pub fn executer(a: &Action) -> Result<Option<String>, String> {
             }
             if code != 0 && l.is_empty() {
                 return Err(format!("échec (code {code})"));
+            }
+            match args.first().map(String::as_str) {
+                Some("--ajouter") => return Ok(Some("Tâche ajoutée".into())),
+                Some("--cocher") => return Ok(Some("Tâche cochée".into())),
+                _ => {}
             }
             Ok(Some(if l.is_empty() { "Fait".into() } else { l }))
         }

@@ -27,6 +27,7 @@ const PREFIXES: &[(&str, &str, socle::icons::Icon)] = &[
     ("d", "Projets", socle::icons::Icon::Code),
     ("y", "Tube", socle::icons::Icon::Play),
     ("v", "Mémoire", socle::icons::Icon::History),
+    ("t", "Tâches", socle::icons::Icon::Check),
     ("k", "Vigie", socle::icons::Icon::Bolt),
     ("c", "Claude", socle::icons::Icon::Terminal),
     ("g", "Google", socle::icons::Icon::Link),
@@ -53,6 +54,7 @@ fn section(r: &Res) -> &str {
         Ico::Code | Ico::Terminal | Ico::Git if r.cle.as_deref().is_some_and(|c| c.starts_with("dev:")) => "Projets",
         Ico::Claude => "Sessions Claude",
         Ico::Memoire => "Mémoire",
+        Ico::Tache => "Tâches",
         Ico::Video => "Tube",
         Ico::Web => "Web",
         _ => "Actions",
@@ -310,6 +312,7 @@ impl App {
             "y" => a.tube.is_some(),
             "v" => a.memoire_cherche,
             "c" => a.claude.is_some(),
+            "t" => a.taches_cli,
             _ => true,
         }
     }
@@ -488,7 +491,7 @@ impl App {
                 }
                 Evt::Async(r, v) => {
                     self.en_cours.remove(&r);
-                    if matches!(r, Req::Fichiers(_) | Req::Memoire(_)) {
+                    if matches!(r, Req::Fichiers(_) | Req::Memoire(_) | Req::TachesComprendre(_) | Req::TachesLister(Some(_))) {
                         let meme = std::mem::discriminant(&r);
                         self.asyncs.retain(|k, _| std::mem::discriminant(k) != meme);
                     }
@@ -600,6 +603,12 @@ impl App {
         let garder = matches!(action, Action::Sortie { .. });
         if garder {
             self.msg = Some(("…".into(), false));
+            if let Action::Sortie { args, .. } = &action
+                && args.first().map(String::as_str) == Some("--ajouter")
+            {
+                self.q.clear(); // la puce « Tâches » reste : on enchaîne la suivante
+                self.calculer();
+            }
         } else {
             self.cacher = true;
         }
@@ -730,6 +739,7 @@ impl App {
             Some("v") => "Rechercher dans Mémoire",
             Some("k") => "Quel serveur ? nom ou :port",
             Some("c") => "Quelle session Claude ?",
+            Some("t") => "Nouvelle tâche (demain 18h #liste !) ou recherche",
             Some(_) => "Rechercher sur le web",
             None if self.sel.is_some() => "Texte sélectionné : choisis une action, ou tape…",
             None => "Rechercher une app, un jeu, un fichier, calculer…",
@@ -945,6 +955,7 @@ fn icone(i: Ico) -> socle::icons::Icon {
         Ico::Tuer => Icon::Close,
         Ico::Son => Icon::Volume,
         Ico::Memoire => Icon::History,
+        Ico::Tache => Icon::Check,
         Ico::Jauge => Icon::Memory,
         Ico::Video => Icon::Play,
         Ico::Repeter => Icon::Refresh,

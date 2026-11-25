@@ -1,6 +1,6 @@
 # Lanceur — stack technique (document de référence)
 
-Version 0.2.0, v1 livrée vite (consigne du 24/11) : pas encore d'audit ponytail ni d'EGM.
+Version 0.2.1, v1 livrée vite (consigne du 24/11) : pas encore d'audit ponytail ni d'EGM.
 
 ## 1. But et direction
 - **Rôle** : une barre centrale ouverte par **Alt+Espace** (remplace le menu système de fenêtre). On tape 2 lettres, Entrée.
@@ -59,6 +59,7 @@ Intégrations (règle 4, masquées si absentes) :
 | `k`, `ram` | `Vigie.exe --etat-dev`, `--couper-dev --seulement <cle>` | `VigieCli` contient `etat-dev couper-dev` ; sinon `k :port` en direct |
 | `mode jeu` | `Vigie.exe --avant-jeu` / `--apres-jeu` | exe présent |
 | `bilan` | `Bilan.exe --resume` | marqueur `BilanCli` contient `resume` (Bilan ≥ 0.1.2) |
+| `t` | `Taches.exe --ajouter`, `--comprendre --json` (aperçu en direct), `--lister ma-journee|tout --json [--chercher]`, `--cocher <id>` | `TachesCli` contient `ajouter comprendre lister cocher` (Tâches ≥ 0.2.1) ; Entrée coche, Maj+Entrée ouvre Tâches |
 | `c` | `claude.exe` (PATH ou `%APPDATA%\Claude\claude-code\…`) | exe trouvé |
 
 ## 7. Mesures (24/11, i9-9900K, mode test invisible)
@@ -77,7 +78,7 @@ Intégrations (règle 4, masquées si absentes) :
 - La sélection est lue avant d'ouvrir la barre (35 ms max) ; une app lente répond trop tard et la sélection arrive après coup (ou pas).
 - Noms de fichiers en minuscules quand ils viennent de l'index de l'Explorateur (il les stocke repliés).
 - RAM : l'index de fichiers en coûte l'essentiel.
-- `cargo test` : 34 tests (moteur, calcul, sources, marqueurs, Win32 en lecture seule).
+- `cargo test` : 35 tests (moteur, calcul, sources, marqueurs, Win32 en lecture seule).
 
 ## 9. Pistes (à valider)
 - Apps du Store (shell:AppsFolder), Ctrl+chiffre pour choisir la n-ième ligne, aperçu de fichier par le Lecteur, historique de calculs.

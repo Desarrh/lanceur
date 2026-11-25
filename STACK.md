@@ -1,6 +1,6 @@
 # Lanceur — stack technique (document de référence)
 
-Version 0.1.1, v1 livrée vite (consigne du 24/11) : pas encore d'audit ponytail ni d'EGM.
+Version 0.2.0, v1 livrée vite (consigne du 24/11) : pas encore d'audit ponytail ni d'EGM.
 
 ## 1. But et direction
 - **Rôle** : une barre centrale ouverte par **Alt+Espace** (remplace le menu système de fenêtre). On tape 2 lettres, Entrée.
@@ -29,10 +29,18 @@ Version 0.1.1, v1 livrée vite (consigne du 24/11) : pas encore d'audit ponytail
 | `src/calc.rs` | expressions, %, unités, devises, couleurs (std seulement) |
 | `src/sysw.rs` | ports en écoute, tuer (chemin vérifié juste avant), verrouiller, veille, corbeille, ShellExecute, sortie de CLI avec délai, presse-papiers |
 | `src/audio.rs` | volume, muet, sorties, sortie par défaut (IPolicyConfig, interface non documentée) |
+| `src/icones.rs` | icônes Windows (IShellItemImageFactory, repli SHGetFileInfo ; cible des .lnk sans flèche), icônes par type sans disque, jaquettes (cache Steam local, sinon téléchargement par curl.exe) réduites et cachées dans `%LOCALAPPDATA%\Lanceur\jaquettes` |
 | `src/uia.rs` | texte sélectionné par UI Automation (TextPattern), délais de 100 ms |
 
 ## 4. Direction artistique
-Thème du socle (crème / bleu nuit selon Windows), carte arrondi 10, champ 20 px, lignes de 46 px (titre 15, sous-titre 12 `muted`), lettres trouvées en `accent`, ligne active `sel_bg`, icônes vectorielles du socle, aperçu de couleur pour `#hex`. Icône : barre crème avec chevron bleu sur fond bleu nuit (`assets/make_icon.py`).
+- **Carte** : 680 px de large, coins arrondis et ombre de Windows 11 (DWM `DWMWA_WINDOW_CORNER_PREFERENCE`, gratuit), liseré de la couleur `accent` (`DWMWA_BORDER_COLOR`). Fond `surface` du thème du socle (crème / bleu nuit selon Windows).
+- **Acrylic/Mica : non fait.** Le fond système demande un client transparent ; le rendu CPU (BitBlt de softbuffer) peint opaque. Il faudrait passer au rendu GPU ou à une surface DirectComposition, ce qui coûte en RAM et en ouverture.
+- **Apparition** : 110 ms de fondu (fenêtre « layered » le temps de l'animation) et glissement de 10 px vers le haut, ease-out ; la saisie marche dès la 1re image. Pas de zoom : il faudrait redessiner à chaque image à une autre échelle.
+- **Champ** : 60 px, loupe `accent`, texte 20 px, aide qui change selon le préfixe ; un préfixe tapé (`p `, `d `, `y `, `v `, `k `, `c `, `g `, `yt `, `gh `) devient une **puce** pleine `accent` dans le champ (Retour arrière sur champ vide la retire).
+- **Barre vide** : puces cliquables des préfixes (icônes du socle, lettre en `muted`), résumé de Bilan en une ligne, puis sections « Texte sélectionné », « Dernière action », « Récents et fréquents ».
+- **Résultats** : sections en MAJUSCULES 11 px `muted` (Calcul, Apps, Jeux, Fichiers, Projets, Web, Actions…), groupées dans l'ordre de la meilleure ; lignes de 48 px, vraies icônes Windows (32 px) et jaquettes de jeux (2:3), sinon icône du socle sur pastille ; ligne active `sel_bg` + barre `accent` à gauche + touches dessinées (↵, Maj ↵ dossier, ↵ confirmer en `del`) ; calcul en 26 px sur une ligne de 66 px ; aperçu de couleur pour `#hex`.
+- **Pied** : raccourcis (↵ ouvrir · Maj+↵ dossier · Tab compléter · ↑↓ · Échap), remplacés par le message de la dernière action.
+- Icône : barre crème avec chevron bleu sur fond bleu nuit (`assets/make_icon.py`).
 
 ## 5. Conventions
 - Réglages `%APPDATA%\Lanceur\settings.json` : `demarrage`, `appris` (usage par clé, dernier choix par requête), `snippets` (`;nom` → texte copié), `derniere` (pour `!`). Cache `%LOCALAPPDATA%\Lanceur\taux-bce.xml`.
@@ -56,7 +64,7 @@ Intégrations (règle 4, masquées si absentes) :
 ## 7. Mesures (24/11, i9-9900K, mode test invisible)
 | Mesure | Valeur |
 |---|---|
-| Ouverture (montrer → 1re image présentée) | 14 ms |
+| Ouverture (montrer → 1re image présentée) | 20 à 23 ms (14 ms en v0.1) |
 | Recherche apps/jeux/commandes | 0,1 ms |
 | Recherche fichiers (517 121 entrées, index de l'Explorateur filtré) | 4 à 6,5 ms (en fond, ajoutée après) |
 | `--action` sans instance ouverte | 150 ms |
@@ -69,7 +77,7 @@ Intégrations (règle 4, masquées si absentes) :
 - La sélection est lue avant d'ouvrir la barre (35 ms max) ; une app lente répond trop tard et la sélection arrive après coup (ou pas).
 - Noms de fichiers en minuscules quand ils viennent de l'index de l'Explorateur (il les stocke repliés).
 - RAM : l'index de fichiers en coûte l'essentiel.
-- `cargo test` : 32 tests (moteur, calcul, sources, marqueurs, Win32 en lecture seule).
+- `cargo test` : 34 tests (moteur, calcul, sources, marqueurs, Win32 en lecture seule).
 
 ## 9. Pistes (à valider)
 - Apps du Store (shell:AppsFolder), Ctrl+chiffre pour choisir la n-ième ligne, aperçu de fichier par le Lecteur, historique de calculs.

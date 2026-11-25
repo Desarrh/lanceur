@@ -18,6 +18,8 @@ pub struct Item {
     /// Chemin, URL ou identifiant de commande : sert aussi de clé pour l'apprentissage.
     pub cible: String,
     pub detail: String,
+    /// Image (voir `Res::img`).
+    pub img: Option<String>,
 }
 
 /// Dossier des projets de dev.
@@ -64,7 +66,8 @@ fn menu_demarrer(d: &Path, depth: u32, v: &mut Vec<Item>) {
         }
         let dossier = p.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()).unwrap_or("").to_string();
         let detail = if dossier == "Programs" { "App".into() } else { format!("App · {dossier}") };
-        v.push(Item { genre: Genre::App, nom, cible: p.to_string_lossy().into_owned(), detail });
+        let cible = p.to_string_lossy().into_owned();
+        v.push(Item { genre: Genre::App, nom, img: Some(format!("p:{cible}")), cible, detail });
     }
 }
 
@@ -81,12 +84,14 @@ fn maison(v: &mut Vec<Item>) {
             if !ext_ok || nom.contains("ancien") || nom.contains('.') {
                 continue;
             }
-            v.push(Item { genre: Genre::Maison, nom, cible: p.to_string_lossy().into_owned(), detail: "App maison".into() });
+            let cible = p.to_string_lossy().into_owned();
+            v.push(Item { genre: Genre::Maison, nom, img: Some(format!("p:{cible}")), cible, detail: "App maison".into() });
         }
     }
     let ult = racine_dev().join("Launcher\\src-tauri\\target\\release\\Ultimate.exe");
     if ult.is_file() {
-        v.push(Item { genre: Genre::Maison, nom: "Ultimate".into(), cible: ult.to_string_lossy().into_owned(), detail: "App maison · jeux".into() });
+        let cible = ult.to_string_lossy().into_owned();
+        v.push(Item { genre: Genre::Maison, nom: "Ultimate".into(), img: Some(format!("p:{cible}")), cible, detail: "App maison · jeux".into() });
     }
 }
 
@@ -105,6 +110,18 @@ struct JeuUltimate {
     source: String,
     #[serde(default)]
     installed: bool,
+    #[serde(default)]
+    cover: String,
+    #[serde(default)]
+    steam_appid: Option<u64>,
+    #[serde(default)]
+    id: String,
+}
+
+/// Clé d'image d'un jeu : `j:<clé de cache>|<appid Steam>|<url de jaquette>`.
+fn img_jeu(cle: &str, appid: Option<u64>, url: &str) -> Option<String> {
+    let cle: String = cle.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' }).collect();
+    Some(format!("j:{cle}|{}|{url}", appid.map(|a| a.to_string()).unwrap_or_default()))
 }
 
 fn jeux(v: &mut Vec<Item>) {
@@ -112,7 +129,8 @@ fn jeux(v: &mut Vec<Item>) {
     if let Some(Ok(b)) = lib.map(std::fs::read) {
         if let Ok(js) = serde_json::from_slice::<Vec<JeuUltimate>>(&b) {
             for j in js.into_iter().filter(|j| j.installed && !j.launch.is_empty() && !j.name.is_empty()) {
-                v.push(Item { genre: Genre::Jeu, nom: j.name, cible: j.launch, detail: format!("Jeu · {}", source(&j.source)) });
+                let img = img_jeu(&j.id, j.steam_appid, &j.cover);
+                v.push(Item { genre: Genre::Jeu, nom: j.name, cible: j.launch, detail: format!("Jeu · {}", source(&j.source)), img });
             }
             return;
         }
@@ -159,12 +177,13 @@ fn steam(v: &mut Vec<Item>) {
             if nom.contains("Steamworks") || nom.contains("Redistributable") {
                 continue;
             }
-            v.push(Item { genre: Genre::Jeu, nom, cible: format!("steam://rungameid/{id}"), detail: "Jeu · Steam".into() });
+            let img = img_jeu(&format!("steam-{id}"), id.parse().ok(), "");
+            v.push(Item { genre: Genre::Jeu, nom, cible: format!("steam://rungameid/{id}"), detail: "Jeu · Steam".into(), img });
         }
     }
 }
 
-fn steam_path() -> Option<PathBuf> {
+pub fn steam_path() -> Option<PathBuf> {
     use windows_sys::Win32::System::Registry::*;
     let w = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     let mut buf = [0u16; 520];
@@ -189,7 +208,7 @@ fn epic(v: &mut Vec<Item>) {
             continue;
         }
         let cible = format!("com.epicgames.launcher://apps/{}%3A{}%3A{}?action=launch&silent=true", s("CatalogNamespace"), s("CatalogItemId"), s("AppName"));
-        v.push(Item { genre: Genre::Jeu, nom: s("DisplayName"), cible, detail: "Jeu · Epic".into() });
+        v.push(Item { genre: Genre::Jeu, nom: s("DisplayName"), cible, detail: "Jeu · Epic".into(), img: None });
     }
 }
 

@@ -12,9 +12,66 @@ use std::time::{Duration, Instant};
 
 pub const APP: &str = "Lanceur";
 pub const LARGEUR: f32 = 680.0;
-const CHAMP: f32 = 58.0;
-const LIGNE: f32 = 46.0;
-const MAX_LIGNES: usize = 9;
+const CHAMP: f32 = 60.0;
+const LIGNE: f32 = 48.0;
+const LIGNE_CALC: f32 = 66.0;
+const SECTION: f32 = 26.0;
+const PUCES: f32 = 46.0;
+const PIED: f32 = 30.0;
+/// Hauteur maximale de la liste (au-delà : défilement qui suit la sélection).
+const LISTE_MAX: f32 = 470.0;
+
+/// Préfixes affichés en puce : (tête tapée, libellé, icône).
+const PREFIXES: &[(&str, &str, socle::icons::Icon)] = &[
+    ("p", "Jeux", socle::icons::Icon::Gamepad),
+    ("d", "Projets", socle::icons::Icon::Code),
+    ("y", "Tube", socle::icons::Icon::Play),
+    ("v", "Mémoire", socle::icons::Icon::History),
+    ("k", "Vigie", socle::icons::Icon::Bolt),
+    ("c", "Claude", socle::icons::Icon::Terminal),
+    ("g", "Google", socle::icons::Icon::Link),
+    ("yt", "YouTube", socle::icons::Icon::Play),
+    ("gh", "GitHub", socle::icons::Icon::Git),
+];
+
+/// Ligne affichée : en-tête de section ou résultat.
+enum Ligne {
+    Section(String),
+    Res(usize),
+}
+
+/// Section d'un résultat : imposée par le moteur, sinon déduite de son icône.
+fn section(r: &Res) -> &str {
+    if let Some(s) = &r.section {
+        return s;
+    }
+    match r.ico {
+        Ico::Calc => "Calcul",
+        Ico::App | Ico::Maison => "Apps",
+        Ico::Jeu => "Jeux",
+        Ico::Dossier | Ico::Fichier => "Fichiers",
+        Ico::Code | Ico::Terminal | Ico::Git if r.cle.as_deref().is_some_and(|c| c.starts_with("dev:")) => "Projets",
+        Ico::Claude => "Sessions Claude",
+        Ico::Memoire => "Mémoire",
+        Ico::Video => "Tube",
+        Ico::Web => "Web",
+        _ => "Actions",
+    }
+}
+
+/// Clé d'image → pixels (thread des icônes).
+fn charger_icone(k: &str, jaq: &std::path::Path, steam: Option<&std::path::Path>) -> Option<crate::icones::Img> {
+    if let Some(chemin) = k.strip_prefix("p:") {
+        return crate::icones::icone(chemin, 32);
+    }
+    if let Some(ext) = k.strip_prefix("t:") {
+        return crate::icones::icone_type(ext, ext == "/", 32);
+    }
+    let rest = k.strip_prefix("j:")?;
+    let mut it = rest.splitn(3, '|');
+    let (cle, appid, url) = (it.next()?, it.next()?.parse::<u64>().ok(), it.next().filter(|u| !u.is_empty()));
+    crate::icones::jaquette(cle, url, steam, appid, jaq, 52, 76)
+}
 
 pub static UPDATER: socle::update::Updater = socle::update::Updater { repo: "Desarrh/lanceur", current: env!("CARGO_PKG_VERSION"), asset_suffix: "windows-x64.zip", exe_name: Some("Lanceur.exe") };
 
@@ -83,6 +140,7 @@ enum Evt {
     Async(Req, Vec<Res>),
     Fait(Result<Option<String>, String>),
     Maj(Option<socle::update::Release>),
+    Icone(String, Option<crate::icones::Img>),
 }
 
 pub struct App {
@@ -110,6 +168,13 @@ pub struct App {
     pub cacher: bool,
     pub quitter: bool,
     focus: bool,
+    /// Préfixe affiché en puce dans le champ (`p`, `y`…) ; `q` ne contient alors que le reste.
+    prefixe: Option<&'static str>,
+    /// Icônes Windows et jaquettes : clé `Res::img` → texture (None = en cours ou introuvable).
+    icones: HashMap<String, Option<egui::TextureHandle>>,
+    tx_ico: Sender<String>,
+    /// Résumé de Bilan (barre vide), avec son heure.
+    bilan: Option<(String, Instant)>,
 }
 
 impl App {
@@ -118,6 +183,21 @@ impl App {
         let pal = socle::theme::palette(socle::theme::system_dark(ctx));
         socle::theme::apply(ctx, &pal);
         let (tx, rx) = channel();
+        // Un seul thread pour les icônes (COM, cache disque des jaquettes) : rien ne bloque l'interface.
+        let (tx_ico, rx_ico) = channel::<String>();
+        {
+            let (tx, c) = (tx.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                let jaq = socle::paths::cache_dir(APP).join("jaquettes");
+                let _ = std::fs::create_dir_all(&jaq);
+                let steam = sources::steam_path();
+                while let Ok(k) = rx_ico.recv() {
+                    let img = std::panic::catch_unwind(|| charger_icone(&k, &jaq, steam.as_deref())).ok().flatten();
+                    let _ = tx.send(Evt::Icone(k, img));
+                    c.request_repaint();
+                }
+            });
+        }
         let mut app = App {
             ctx: ctx.clone(),
             pal,
@@ -142,6 +222,10 @@ impl App {
             cacher: false,
             quitter: false,
             focus: true,
+            prefixe: None,
+            icones: HashMap::new(),
+            tx_ico,
+            bilan: None,
         };
         app.charger_fichiers();
         app.recharger(); // taux de change du jour, en fond
@@ -186,6 +270,12 @@ impl App {
     /// Ouverture par Alt+Espace : barre vide, sélection éventuelle, données rafraîchies si vieilles.
     pub fn ouvrir(&mut self, sel: Option<String>) {
         self.q.clear();
+        self.prefixe = None;
+        if self.d.apps.bilan_resume && self.bilan.as_ref().is_none_or(|b| b.1.elapsed() > Duration::from_secs(600)) {
+            self.bilan = Some((String::new(), Instant::now()));
+            let apps = self.d.apps.clone();
+            self.fond(move || Evt::Async(Req::Bilan, integr::faire(&Req::Bilan, &apps)));
+        }
         self.sel = sel.filter(|s| s.chars().count() <= 20_000);
         self.asyncs.clear();
         self.msg = self.msg.take().filter(|m| m.1);
@@ -202,9 +292,69 @@ impl App {
         self.calculer();
     }
 
+    /// Texte complet de la requête (préfixe en puce + saisie).
+    fn texte(&self) -> String {
+        match self.prefixe {
+            Some(p) => format!("{p} {}", self.q),
+            None => self.q.clone(),
+        }
+    }
+
+    fn vide(&self) -> bool {
+        self.prefixe.is_none() && self.q.trim().is_empty()
+    }
+
+    fn dispo(&self, t: &str) -> bool {
+        let a = &self.d.apps;
+        match t {
+            "y" => a.tube.is_some(),
+            "v" => a.memoire_cherche,
+            "c" => a.claude.is_some(),
+            _ => true,
+        }
+    }
+
+    /// `p hades` tapé en entier : la tête passe en puce si l'app correspondante est là.
+    fn normaliser(&mut self) {
+        if self.prefixe.is_some() {
+            return;
+        }
+        let Some((tete, reste)) = self.q.split_once(' ') else { return };
+        let tete = tete.to_lowercase();
+        if let Some(&(t, _, _)) = PREFIXES.iter().find(|x| x.0 == tete && self.dispo(x.0)) {
+            self.prefixe = Some(t);
+            self.q = reste.to_string();
+        }
+    }
+
+    fn puces(&self) -> Vec<(&'static str, &'static str, socle::icons::Icon)> {
+        let mut v: Vec<_> = PREFIXES.iter().copied().filter(|x| !matches!(x.0, "yt" | "gh") && (x.0 != "k" || self.d.apps.vigie.is_some()) && self.dispo(x.0)).collect();
+        v.push((";", "Snippets", socle::icons::Icon::Copy));
+        v
+    }
+
+    fn lignes(&self) -> Vec<(Ligne, f32)> {
+        let mut v = vec![];
+        let mut sec = "";
+        for (i, r) in self.res.iter().enumerate() {
+            let s = section(r);
+            if s != sec {
+                v.push((Ligne::Section(s.to_string()), SECTION));
+                sec = s;
+            }
+            v.push((Ligne::Res(i), if r.ico == Ico::Calc && !self.vide() { LIGNE_CALC } else { LIGNE }));
+        }
+        v
+    }
+
+    fn bilan_ligne(&self) -> Option<&str> {
+        self.bilan.as_ref().map(|b| b.0.as_str()).filter(|s| !s.is_empty() && self.vide())
+    }
+
     pub fn hauteur(&self) -> f32 {
-        let n = self.res.len().min(MAX_LIGNES) as f32;
-        CHAMP + if n > 0.0 { n * LIGNE + 8.0 } else { 0.0 } + if self.msg.is_some() { 28.0 } else { 0.0 }
+        let liste: f32 = self.lignes().iter().map(|x| x.1).sum::<f32>().min(LISTE_MAX);
+        let puces = if self.vide() { PUCES + if self.bilan_ligne().is_some() { 26.0 } else { 0.0 } } else { 0.0 };
+        CHAMP + puces + if liste > 0.0 { liste + 8.0 } else { 0.0 } + PIED
     }
 
     fn calculer(&mut self) {
@@ -223,19 +373,37 @@ impl App {
                 derniere: self.s.derniere.as_ref(),
                 asyncs: &self.asyncs,
             };
-            moteur::requete(&self.q, &cx)
+            moteur::requete(&self.texte(), &cx)
         };
-        if self.q.trim().is_empty() && let Some(m) = &self.maj {
+        // Regroupe par section, dans l'ordre de première apparition (le meilleur reste en tête).
+        let mut ordre: Vec<String> = vec![];
+        for r in &res {
+            let s = section(r).to_string();
+            if !ordre.contains(&s) {
+                ordre.push(s);
+            }
+        }
+        res.sort_by_key(|r| ordre.iter().position(|s| s == section(r)));
+        if self.vide() && let Some(m) = &self.maj {
             res.insert(0, Res::new(Ico::Repeter, format!("Mettre à jour le Lanceur ({})", m.version), "Entrée : installe et relance", Action::Rien).cle("maj"));
         }
-        if self.q_calc.as_deref() != Some(self.q.as_str()) {
+        let texte = self.texte();
+        if self.q_calc.as_deref() != Some(texte.as_str()) {
             self.i = 0;
             self.confirm = None;
         }
         if std::env::var_os("LANCEUR_MESURE").is_some() {
-            eprintln!("recherche « {} » : {:.2} ms", self.q, t0.elapsed().as_secs_f64() * 1000.0);
+            eprintln!("recherche « {texte} » : {:.2} ms", t0.elapsed().as_secs_f64() * 1000.0);
         }
-        self.q_calc = Some(self.q.clone());
+        self.q_calc = Some(texte);
+        for r in &res {
+            if let Some(k) = &r.img
+                && !self.icones.contains_key(k)
+            {
+                self.icones.insert(k.clone(), None);
+                let _ = self.tx_ico.send(k.clone());
+            }
+        }
         self.i = self.i.min(res.len().saturating_sub(1));
         self.res = res;
         for r in reqs {
@@ -262,6 +430,13 @@ impl App {
                                 let parent = p.parent().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
                                 let mut r = Res::new(if dir { Ico::Dossier } else { Ico::Fichier }, fx.nom(h.index), parent, Action::Ouvrir { cible: ps.clone(), args: None, dossier: None }).cle(ps.clone());
                                 r.alt = Some(Action::Reveler(ps.clone()));
+                                r.img = Some(if crate::icones::icone_propre(&ps) {
+                                    format!("p:{ps}")
+                                } else if dir {
+                                    "t:/".to_string()
+                                } else {
+                                    format!("t:{}", p.extension().map(|e| format!(".{}", e.to_string_lossy().to_lowercase())).unwrap_or_default())
+                                });
                                 let b = appris.get(&ps).map_or(0, |(n, _)| (*n).min(30) as i32 * 10);
                                 (h.score + b, r)
                             })
@@ -299,6 +474,17 @@ impl App {
                     self.asyncs.retain(|k, _| !matches!(k, Req::Fichiers(_)));
                     self.en_cours.retain(|k| !matches!(k, Req::Fichiers(_)));
                     changer = true;
+                }
+                Evt::Async(Req::Bilan, v) if self.vide() || !self.asyncs.contains_key(&Req::Bilan) => {
+                    let l = v.first().filter(|r| matches!(r.action, Action::Copier(_))).map(|r| r.titre.clone()).unwrap_or_default();
+                    self.bilan = Some((l, Instant::now()));
+                    self.en_cours.remove(&Req::Bilan);
+                    self.asyncs.insert(Req::Bilan, v);
+                    changer = true;
+                }
+                Evt::Icone(k, img) => {
+                    let t = img.map(|i| self.ctx.load_texture(&k, egui::ColorImage::from_rgba_unmultiplied([i.w as usize, i.h as usize], &i.rgba), egui::TextureOptions::LINEAR));
+                    self.icones.insert(k, t);
                 }
                 Evt::Async(r, v) => {
                     self.en_cours.remove(&r);
@@ -375,6 +561,8 @@ impl App {
             Action::Rien => return,
             Action::Remplir(t) => {
                 self.q = t.clone();
+                self.prefixe = None;
+                self.normaliser();
                 self.focus = true;
                 self.calculer();
                 return;
@@ -401,7 +589,8 @@ impl App {
             _ => {}
         }
         if let Some(c) = &r.cle {
-            self.s.appris.noter(&self.q, c);
+            let t = self.texte();
+            self.s.appris.noter(&t, c);
         }
         let mut derniere = r.clone();
         derniere.action = action.clone();
@@ -445,7 +634,8 @@ impl App {
 
     pub fn handle_keys(&mut self) {
         let n = self.res.len();
-        let (bas, haut, entree, maj_entree, echap, tab) = self.ctx.input_mut(|i| {
+        let retour_vide = self.q.is_empty() && self.prefixe.is_some();
+        let (bas, haut, entree, maj_entree, echap, tab, retour) = self.ctx.input_mut(|i| {
             (
                 i.consume_key(Modifiers::NONE, Key::ArrowDown),
                 i.consume_key(Modifiers::NONE, Key::ArrowUp),
@@ -453,6 +643,7 @@ impl App {
                 i.consume_key(Modifiers::SHIFT, Key::Enter),
                 i.consume_key(Modifiers::NONE, Key::Escape),
                 i.consume_key(Modifiers::NONE, Key::Tab),
+                retour_vide && i.consume_key(Modifiers::NONE, Key::Backspace),
             )
         });
         if bas && n > 0 {
@@ -463,22 +654,23 @@ impl App {
             self.i = (self.i + n - 1) % n;
             self.confirm = None;
         }
+        if retour {
+            self.prefixe = None;
+            self.calculer();
+        }
         if echap {
-            if self.q.is_empty() {
+            if self.vide() {
                 self.cacher = true;
             } else {
                 self.q.clear();
+                self.prefixe = None;
                 self.calculer();
             }
         }
         if tab && let Some(r) = self.res.get(self.i) {
             // Complète avec le titre (utile pour « d proj », « p jeu »).
-            if let Some((tete, _)) = self.q.split_once(' ') {
-                let nom = r.titre.split(" : ").next().unwrap_or(&r.titre).to_string();
-                self.q = format!("{tete} {nom} ");
-            } else {
-                self.q = r.titre.clone();
-            }
+            let nom = r.titre.split(" : ").next().unwrap_or(&r.titre).to_string();
+            self.q = if self.prefixe.is_some() { format!("{nom} ") } else { nom };
             self.calculer();
         }
         if entree {
@@ -489,16 +681,59 @@ impl App {
         }
     }
 
+    /// Icône d'un résultat : vraie icône Windows / jaquette si chargée, sinon icône du socle.
+    fn peindre_icone(&self, ui: &Ui, r: &Res, centre: egui::Pos2, actif: bool) {
+        let p = &self.pal;
+        if let Some([r_, g, b]) = r.couleur {
+            let rc = Rect::from_center_size(centre, vec2(26.0, 26.0));
+            ui.painter().rect_filled(rc, 6.0, Color32::from_rgb(r_, g, b));
+            ui.painter().rect_stroke(rc, 6.0, egui::Stroke::new(1.0, p.border), egui::StrokeKind::Outside);
+            return;
+        }
+        if let Some(Some(t)) = r.img.as_ref().and_then(|k| self.icones.get(k)) {
+            let [w, h] = t.size();
+            let taille = if h > w { vec2(26.0, 38.0) } else { vec2(26.0, 26.0) };
+            let rc = Rect::from_center_size(centre, taille);
+            egui::Image::new((t.id(), taille)).corner_radius(if h > w { 4.0 } else { 0.0 }).paint_at(ui, rc);
+            return;
+        }
+        let fond = if actif { p.accent } else { p.muted };
+        let rc = Rect::from_center_size(centre, vec2(30.0, 30.0));
+        ui.painter().rect_filled(rc, 8.0, socle::theme::blend(p.surface, fond, 0.12));
+        socle::icons::paint(ui.painter(), rc.shrink(6.0), icone(r.ico), fond);
+    }
+
     pub fn draw(&mut self, ui: &mut Ui) {
         let p = self.pal.clone();
         let plein = ui.max_rect();
-        ui.painter().rect_filled(plein, 10.0, p.surface);
-        ui.painter().rect_stroke(plein.shrink(0.5), 10.0, egui::Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
-        // Champ de saisie.
+        ui.painter().rect_filled(plein, 0.0, p.surface);
+
+        // --- Champ : loupe, puce du préfixe, saisie ---
         let champ = Rect::from_min_size(plein.min, vec2(plein.width(), CHAMP));
-        socle::icons::paint(ui.painter(), Rect::from_center_size(pos2(champ.left() + 30.0, champ.center().y), vec2(22.0, 22.0)), socle::icons::Icon::Search, p.muted);
-        let edit_rect = Rect::from_min_max(pos2(champ.left() + 52.0, champ.top() + 12.0), pos2(champ.right() - 16.0, champ.bottom() - 12.0));
+        socle::icons::paint(ui.painter(), Rect::from_center_size(pos2(champ.left() + 30.0, champ.center().y), vec2(22.0, 22.0)), socle::icons::Icon::Search, p.accent);
+        let mut x0 = champ.left() + 54.0;
+        if let Some(pf) = self.prefixe {
+            let (lib, ic) = PREFIXES.iter().find(|x| x.0 == pf).map_or(("", socle::icons::Icon::Dot), |x| (x.1, x.2));
+            let g = ui.painter().layout_no_wrap(lib.to_string(), FontId::proportional(14.0), p.on_accent);
+            let rc = Rect::from_min_size(pos2(x0, champ.center().y - 14.0), vec2(g.size().x + 40.0, 28.0));
+            ui.painter().rect_filled(rc, 14.0, p.accent);
+            socle::icons::paint(ui.painter(), Rect::from_center_size(pos2(rc.left() + 16.0, rc.center().y), vec2(16.0, 16.0)), ic, p.on_accent);
+            ui.painter().galley(pos2(rc.left() + 30.0, rc.center().y - g.size().y / 2.0), g, p.on_accent);
+            x0 = rc.right() + 10.0;
+        }
+        let edit_rect = Rect::from_min_max(pos2(x0, champ.top() + 14.0), pos2(champ.right() - 18.0, champ.bottom() - 14.0));
         let avant = self.q.clone();
+        let aide = match self.prefixe {
+            Some("p") => "Quel jeu ?",
+            Some("d") => "Quel projet ? (ajoute « t » terminal, « gh » GitHub)",
+            Some("y") => "Rechercher dans Tube",
+            Some("v") => "Rechercher dans Mémoire",
+            Some("k") => "Quel serveur ? nom ou :port",
+            Some("c") => "Quelle session Claude ?",
+            Some(_) => "Rechercher sur le web",
+            None if self.sel.is_some() => "Texte sélectionné : choisis une action, ou tape…",
+            None => "Rechercher une app, un jeu, un fichier, calculer…",
+        };
         let resp = ui.put(
             edit_rect,
             egui::TextEdit::singleline(&mut self.q)
@@ -506,7 +741,7 @@ impl App {
                 .frame(egui::Frame::NONE)
                 .font(FontId::proportional(20.0))
                 .text_color(p.text)
-                .hint_text(egui::RichText::new(if self.sel.is_some() { "Texte sélectionné : choisis une action, ou tape…" } else { "Apps, jeux, fichiers, calcul… (d, p, k, y, v, c, ;, :port, !)" }).color(p.muted))
+                .hint_text(egui::RichText::new(aide).color(p.muted))
                 .desired_width(edit_rect.width()),
         );
         if self.focus {
@@ -514,62 +749,157 @@ impl App {
             self.focus = false;
         }
         if self.q != avant {
+            self.normaliser();
             self.calculer();
         }
-        if self.res.is_empty() && self.msg.is_none() {
-            return;
+        let mut y = champ.bottom();
+        ui.painter().hline(plein.x_range(), y, egui::Stroke::new(1.0, p.border));
+
+        // --- Barre vide : puces des préfixes et résumé de Bilan ---
+        let mut puce_clic = None;
+        if self.vide() {
+            let mut x = plein.left() + 14.0;
+            for (t, lib, ic) in self.puces() {
+                let g = ui.painter().layout_no_wrap(lib.to_string(), FontId::proportional(13.0), p.text);
+                let k = ui.painter().layout_no_wrap(t.to_string(), FontId::monospace(12.0), p.muted);
+                let w = g.size().x + k.size().x + 44.0;
+                if x + w > plein.right() - 10.0 {
+                    break;
+                }
+                let rc = Rect::from_min_size(pos2(x, y + 9.0), vec2(w, 28.0));
+                let rep = ui.interact(rc, ui.scope_id().with(("puce", t)), Sense::click());
+                ui.painter().rect_filled(rc, 14.0, if rep.hovered() { p.hover_bg } else { socle::theme::blend(p.surface, p.accent, 0.08) });
+                socle::icons::paint(ui.painter(), Rect::from_center_size(pos2(rc.left() + 16.0, rc.center().y), vec2(16.0, 16.0)), ic, p.accent);
+                let kx = rc.left() + 30.0;
+                ui.painter().galley(pos2(kx, rc.center().y - k.size().y / 2.0), k.clone(), p.muted);
+                ui.painter().galley(pos2(kx + k.size().x + 6.0, rc.center().y - g.size().y / 2.0), g, p.text);
+                if rep.clicked() {
+                    puce_clic = Some(t);
+                }
+                x += w + 8.0;
+            }
+            y += PUCES;
+            if let Some(b) = self.bilan_ligne() {
+                let rc = Rect::from_min_size(pos2(plein.left(), y), vec2(plein.width(), 26.0));
+                socle::icons::paint(ui.painter(), Rect::from_center_size(pos2(rc.left() + 24.0, rc.center().y - 3.0), vec2(16.0, 16.0)), socle::icons::Icon::Chart, p.muted);
+                socle::ui::paint_text_left(ui, Rect::from_min_size(rc.min - vec2(0.0, 3.0), rc.size()), rc.left() + 42.0, b, FontId::proportional(12.5), p.muted, rc.width() - 60.0);
+                y += 26.0;
+            }
         }
-        ui.painter().hline(plein.x_range(), champ.bottom(), egui::Stroke::new(1.0, p.border));
-        // Résultats.
-        let mut y = champ.bottom() + 4.0;
-        let debut = self.i.saturating_sub(MAX_LIGNES - 1);
+
+        // --- Résultats par section ---
+        let lignes = self.lignes();
+        let total: f32 = lignes.iter().map(|x| x.1).sum();
         let mut clic = None;
-        for (k, r) in self.res.iter().enumerate().skip(debut).take(MAX_LIGNES) {
-            let row = Rect::from_min_size(pos2(plein.left() + 6.0, y), vec2(plein.width() - 12.0, LIGNE));
-            let rep = ui.interact(row, ui.scope_id().with(("ligne", k)), Sense::click());
-            if rep.hovered() && ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO) {
-                self.i = k;
+        if total > 0.0 {
+            let haut_liste = total.min(LISTE_MAX);
+            // Décalage pour garder la ligne active visible.
+            let (mut debut_sel, mut acc) = (0.0, 0.0);
+            for (l, h) in &lignes {
+                if let Ligne::Res(i) = l
+                    && *i == self.i
+                {
+                    debut_sel = acc;
+                    acc += h;
+                    break;
+                }
+                acc += h;
             }
-            if rep.clicked() {
-                clic = Some((k, ui.input(|i| i.modifiers.shift)));
+            let decalage = (acc - haut_liste).max(0.0).min(debut_sel);
+            let zone = Rect::from_min_size(pos2(plein.left(), y + 4.0), vec2(plein.width(), haut_liste));
+            let painter = ui.painter().with_clip_rect(zone);
+            let mut yy = zone.top() - decalage;
+            let q_hl = self.q.clone();
+            for (l, h) in &lignes {
+                let row = Rect::from_min_size(pos2(plein.left() + 8.0, yy), vec2(plein.width() - 16.0, *h));
+                yy += h;
+                if row.bottom() < zone.top() || row.top() > zone.bottom() {
+                    continue;
+                }
+                match l {
+                    Ligne::Section(s) => {
+                        let g = painter.layout_no_wrap(s.to_uppercase(), FontId::proportional(11.0), p.muted);
+                        painter.galley(pos2(row.left() + 12.0, row.bottom() - g.size().y - 5.0), g, p.muted);
+                    }
+                    Ligne::Res(k) => {
+                        let k = *k;
+                        let r = &self.res[k];
+                        let rep = ui.interact(row.intersect(zone), ui.scope_id().with(("ligne", k)), Sense::click());
+                        if rep.hovered() && ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO) {
+                            self.i = k;
+                        }
+                        if rep.clicked() {
+                            clic = Some((k, ui.input(|i| i.modifiers.shift)));
+                        }
+                        let actif = k == self.i;
+                        if actif {
+                            painter.rect_filled(row, 8.0, p.sel_bg);
+                            painter.rect_filled(Rect::from_min_size(pos2(row.left(), row.top() + 10.0), vec2(3.0, row.height() - 20.0)), 2.0, p.accent);
+                        }
+                        self.peindre_icone(ui, r, pos2(row.left() + 26.0, row.center().y), actif);
+                        let x = row.left() + 52.0;
+                        let droite = if actif { 150.0 } else { 16.0 };
+                        let max_w = row.right() - x - droite;
+                        let calc = r.ico == Ico::Calc && *h == LIGNE_CALC;
+                        let taille = if calc { 26.0 } else { 15.0 };
+                        let g = socle::ui::highlighted(ui, &r.titre, if calc { "" } else { &q_hl }, FontId::proportional(taille), p.text, p.accent, max_w);
+                        let ty = if r.sous.is_empty() { row.center().y - g.size().y / 2.0 } else { row.top() + if calc { 6.0 } else { 6.0 } };
+                        let gy = g.size().y;
+                        painter.galley(pos2(x, ty), g, p.text);
+                        if !r.sous.is_empty() {
+                            let g = socle::ui::trunc(ui, &r.sous, FontId::proportional(12.0), p.muted, max_w);
+                            painter.galley(pos2(x, ty + gy + 1.0), g, p.muted);
+                        }
+                        if actif {
+                            // Touches à droite : ↵ (ou « confirmer »), ⇧↵ si l'action secondaire existe.
+                            let confirmer = self.confirm == Some(k);
+                            let mut xr = row.right() - 12.0;
+                            let mut touche = |txt: &str, lib: &str, c: Color32| {
+                                let gl = painter.layout_no_wrap(lib.to_string(), FontId::proportional(11.5), c);
+                                xr -= gl.size().x;
+                                painter.galley(pos2(xr, row.center().y - gl.size().y / 2.0), gl, c);
+                                let gt = painter.layout_no_wrap(txt.to_string(), FontId::proportional(12.0), c);
+                                let kc = Rect::from_min_size(pos2(xr - gt.size().x - 14.0, row.center().y - 10.0), vec2(gt.size().x + 10.0, 20.0));
+                                painter.rect_stroke(kc, 5.0, egui::Stroke::new(1.0, c), egui::StrokeKind::Inside);
+                                painter.galley(pos2(kc.left() + 5.0, kc.center().y - gt.size().y / 2.0), gt, c);
+                                xr = kc.left() - 10.0;
+                            };
+                            if confirmer {
+                                touche("↵", " confirmer", p.del);
+                            } else {
+                                touche("↵", "", p.accent);
+                                if r.alt.is_some() {
+                                    touche("Maj ↵", " dossier", p.muted);
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            let actif = k == self.i;
-            if actif {
-                ui.painter().rect_filled(row, 6.0, p.sel_bg);
-            }
-            let ir = Rect::from_center_size(pos2(row.left() + 22.0, row.center().y), vec2(20.0, 20.0));
-            if let Some([r_, g, b]) = r.couleur {
-                ui.painter().rect_filled(ir.expand(2.0), 5.0, Color32::from_rgb(r_, g, b));
-                ui.painter().rect_stroke(ir.expand(2.0), 5.0, egui::Stroke::new(1.0, p.border), egui::StrokeKind::Outside);
-            } else {
-                socle::icons::paint(ui.painter(), ir, icone(r.ico), if actif { p.accent } else { p.muted });
-            }
-            let x = row.left() + 46.0;
-            let droite = if actif { 120.0 } else { 16.0 };
-            let max_w = row.right() - x - droite;
-            let q_hl = self.q.split_once(' ').map_or(self.q.as_str(), |(t, rest)| if t.len() <= 2 { rest } else { self.q.as_str() });
-            let g = socle::ui::highlighted(ui, &r.titre, q_hl, FontId::proportional(15.0), p.text, p.accent, max_w);
-            let ty = if r.sous.is_empty() { row.center().y - g.size().y / 2.0 } else { row.top() + 5.0 };
-            ui.painter().galley(pos2(x, ty), g, p.text);
-            if !r.sous.is_empty() {
-                let g = socle::ui::trunc(ui, &r.sous, FontId::proportional(12.0), p.muted, max_w);
-                ui.painter().galley(pos2(x, row.top() + 25.0), g, p.muted);
-            }
-            if actif {
-                let txt = if self.confirm == Some(k) {
-                    "Entrée : confirmer"
-                } else if r.alt.is_some() {
-                    "↵ · Maj+↵ dossier"
-                } else {
-                    "↵"
-                };
-                socle::ui::paint_text_right(ui, row, row.right() - 12.0, txt, FontId::proportional(11.5), if self.confirm == Some(k) { p.del } else { p.muted });
-            }
-            y += LIGNE;
+            y += haut_liste + 8.0;
         }
-        if let Some((m, err)) = &self.msg {
-            let r = Rect::from_min_size(pos2(plein.left(), plein.bottom() - 28.0), vec2(plein.width(), 28.0));
-            socle::ui::paint_text_left(ui, r, r.left() + 16.0, m, FontId::proportional(12.0), if *err { p.del } else { p.muted }, r.width() - 32.0);
+
+        // --- Pied : message ou raccourcis ---
+        let pied = Rect::from_min_size(pos2(plein.left(), plein.bottom() - PIED), vec2(plein.width(), PIED));
+        let _ = y;
+        ui.painter().hline(plein.x_range(), pied.top(), egui::Stroke::new(1.0, socle::theme::blend(p.surface, p.border, 0.6)));
+        match &self.msg {
+            Some((m, err)) => socle::ui::paint_text_left(ui, pied, pied.left() + 16.0, m, FontId::proportional(12.0), if *err { p.del } else { p.accent }, pied.width() - 32.0),
+            None => {
+                let aide = if self.prefixe.is_some() { "↵ ouvrir   Maj+↵ dossier   Tab compléter   ⌫ retirer le préfixe   Échap fermer" } else { "↵ ouvrir   Maj+↵ dossier   Tab compléter   ↑↓ choisir   Échap fermer" };
+                socle::ui::paint_text_left(ui, pied, pied.left() + 16.0, aide, FontId::proportional(11.5), p.muted, pied.width() - 32.0);
+            }
+        }
+        socle::ui::paint_text_right(ui, pied, pied.right() - 16.0, "Lanceur", FontId::proportional(11.0), socle::theme::blend(p.muted, p.surface, 0.4));
+
+        if let Some(t) = puce_clic {
+            if t == ";" {
+                self.q = ";".into();
+            } else {
+                self.prefixe = PREFIXES.iter().find(|x| x.0 == t).map(|x| x.0);
+            }
+            self.focus = true;
+            self.calculer();
         }
         if let Some((k, alt)) = clic {
             self.i = k;
@@ -584,6 +914,8 @@ impl App {
     /// Mode test : tape une requête comme l'utilisateur.
     pub fn taper(&mut self, q: &str) {
         self.q = q.to_string();
+        self.prefixe = None;
+        self.normaliser();
         self.calculer();
     }
 

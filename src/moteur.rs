@@ -77,11 +77,17 @@ pub struct Res {
     pub confirmer: bool,
     #[serde(default)]
     pub couleur: Option<[u8; 3]>,
+    /// Image : `p:<chemin>` icône Windows du fichier, `t:<ext>` icône d'un type, `j:<clé>|<appid>|<url>` jaquette.
+    #[serde(default)]
+    pub img: Option<String>,
+    /// Section imposée (sinon déduite de l'icône).
+    #[serde(default)]
+    pub section: Option<String>,
 }
 
 impl Res {
     pub fn new(ico: Ico, titre: impl Into<String>, sous: impl Into<String>, action: Action) -> Res {
-        Res { ico, titre: titre.into(), sous: sous.into(), action, alt: None, cle: None, confirmer: false, couleur: None }
+        Res { ico, titre: titre.into(), sous: sous.into(), action, alt: None, cle: None, confirmer: false, couleur: None, img: None, section: None }
     }
     pub fn cle(mut self, c: impl Into<String>) -> Res {
         self.cle = Some(c.into());
@@ -249,6 +255,7 @@ fn ico(g: Genre) -> Ico {
 fn item_res(it: &Item) -> Res {
     let action = Action::Ouvrir { cible: it.cible.clone(), args: None, dossier: None };
     let mut r = Res::new(ico(it.genre), it.nom.clone(), it.detail.clone(), action).cle(it.cible.clone());
+    r.img = it.img.clone();
     if !it.cible.contains("://") {
         r.alt = Some(Action::Reveler(it.cible.clone()));
     }
@@ -347,17 +354,24 @@ fn requete_(q: &str, cx: &Ctx, reqs: &mut Vec<Req>) -> Vec<Res> {
     let q = q.trim_start();
     if q.is_empty() {
         let mut v = cx.sel.map(|s| selection(s, cx)).unwrap_or_default();
+        for r in v.iter_mut() {
+            r.section = Some("Texte sélectionné".into());
+        }
         if let Some(d) = cx.derniere {
             let mut r = d.clone();
-            r.sous = format!("! · refaire : {}", r.sous);
-            r.ico = Ico::Repeter;
+            r.sous = format!("! · refaire · {}", r.sous);
             r.confirmer = false;
+            r.section = Some("Dernière action".into());
             v.push(r);
         }
-        // Les plus utilisés.
+        // Récents et fréquents.
         let mut top: Vec<(i32, &Item)> = cx.items.iter().map(|i| (cx.appris.bonus(&i.cible), i)).filter(|x| x.0 > 0).collect();
         top.sort_by(|a, b| b.0.cmp(&a.0));
-        v.extend(top.into_iter().take(6).map(|(_, i)| item_res(i)));
+        v.extend(top.into_iter().take(7).map(|(_, i)| {
+            let mut r = item_res(i);
+            r.section = Some("Récents et fréquents".into());
+            r
+        }));
         return v;
     }
     if q == "!" {
@@ -582,10 +596,10 @@ mod tests {
 
     fn monde() -> Monde {
         let items = vec![
-            Item { genre: Genre::App, nom: "Google Chrome".into(), cible: "C:\\x\\Chrome.lnk".into(), detail: "App".into() },
-            Item { genre: Genre::App, nom: "Calculatrice".into(), cible: "C:\\x\\Calc.lnk".into(), detail: "App".into() },
-            Item { genre: Genre::Jeu, nom: "Hades".into(), cible: "steam://rungameid/1145360".into(), detail: "Jeu".into() },
-            Item { genre: Genre::Maison, nom: "Explorateur".into(), cible: "C:\\Dev\\explorateur\\dist\\Explorateur.exe".into(), detail: "App maison".into() },
+            Item { genre: Genre::App, nom: "Google Chrome".into(), cible: "C:\\x\\Chrome.lnk".into(), detail: "App".into(), img: None },
+            Item { genre: Genre::App, nom: "Calculatrice".into(), cible: "C:\\x\\Calc.lnk".into(), detail: "App".into(), img: None },
+            Item { genre: Genre::Jeu, nom: "Hades".into(), cible: "steam://rungameid/1145360".into(), detail: "Jeu".into(), img: None },
+            Item { genre: Genre::Maison, nom: "Explorateur".into(), cible: "C:\\Dev\\explorateur\\dist\\Explorateur.exe".into(), detail: "App maison".into(), img: None },
         ];
         let index = socle::fuzzy::Index::from_iter(items.iter().map(|i| i.nom.as_str()));
         let mut snippets = BTreeMap::new();

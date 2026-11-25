@@ -4,6 +4,7 @@ mod app;
 mod audio;
 mod calc;
 mod fond;
+mod icones;
 mod integr;
 mod moteur;
 mod sources;
@@ -52,6 +53,8 @@ struct Runner {
     proxy: winit::event_loop::EventLoopProxy<Evt>,
     /// Mode test : requête à taper puis capture (LANCEUR_REQUETE, LANCEUR_CAPTURE).
     images: u32,
+    /// Apparition en cours : début et position finale.
+    anim: Option<(Instant, PhysicalPosition<i32>)>,
     /// Raccourci global refusé : affiché à la 1re ouverture.
     erreur: Option<String>,
 }
@@ -63,6 +66,37 @@ fn hwnd(w: &Window) -> isize {
         _ => 0,
     }
 }
+
+/// Coins arrondis de Windows 11 et liseré de la couleur d'accent (DWM : gratuit, rien à peindre).
+fn dwm(h: isize, accent: egui::Color32) {
+    use windows_sys::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute};
+    let coin = DWMWCP_ROUND;
+    let couleur: u32 = accent.r() as u32 | (accent.g() as u32) << 8 | (accent.b() as u32) << 16;
+    unsafe {
+        DwmSetWindowAttribute(h as _, DWMWA_WINDOW_CORNER_PREFERENCE as u32, &coin as *const _ as _, 4);
+        DwmSetWindowAttribute(h as _, DWMWA_BORDER_COLOR as u32, &couleur as *const _ as _, 4);
+    }
+}
+
+/// Opacité de la fenêtre (fenêtre « layered » pendant l'animation, normale ensuite).
+fn opacite(h: isize, a: Option<u8>) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW, LWA_ALPHA, SetLayeredWindowAttributes, SetWindowLongPtrW, WS_EX_LAYERED};
+    unsafe {
+        let ex = GetWindowLongPtrW(h as _, GWL_EXSTYLE);
+        match a {
+            Some(a) => {
+                SetWindowLongPtrW(h as _, GWL_EXSTYLE, ex | WS_EX_LAYERED as isize);
+                SetLayeredWindowAttributes(h as _, 0, a, LWA_ALPHA);
+            }
+            None => {
+                SetWindowLongPtrW(h as _, GWL_EXSTYLE, ex & !(WS_EX_LAYERED as isize));
+            }
+        }
+    }
+}
+
+/// Durée de l'apparition (fondu + glissement de 10 px vers le haut).
+const ANIM_MS: f32 = 110.0;
 
 /// Écran sous la souris (l'utilisateur regarde là), barre au quart supérieur.
 fn position(w: &Window, hauteur_px: f64) -> Option<PhysicalPosition<i32>> {
@@ -100,15 +134,25 @@ impl Runner {
         let h = app.hauteur();
         self.hauteur = h;
         let _ = gfx.window.request_inner_size(LogicalSize::new(app::LARGEUR, h));
-        if let Some(p) = position(&gfx.window, h as f64 * gfx.window.scale_factor()) {
-            gfx.window.set_outer_position(p);
+        let pos = position(&gfx.window, h as f64 * gfx.window.scale_factor());
+        if let Some(p) = pos {
+            gfx.window.set_outer_position(PhysicalPosition::new(p.x, p.y + 10));
         }
         if socle::testmode::enabled() {
             socle::testmode::hide(hwnd(&gfx.window)); // opacité 0, sans activation, avant d'apparaître
             gfx.window.set_visible(true);
+            if let Some(p) = pos {
+                gfx.window.set_outer_position(p);
+            }
         } else {
+            // La saisie marche dès la 1re image : l'animation ne fait que l'habiller.
+            opacite(hwnd(&gfx.window), Some(0));
             gfx.window.set_visible(true);
             gfx.window.focus_window();
+            self.anim = pos.map(|p| (Instant::now(), p));
+            if pos.is_none() {
+                opacite(hwnd(&gfx.window), None);
+            }
         }
         self.visible = true;
         gfx.window.request_redraw();
@@ -117,6 +161,9 @@ impl Runner {
     fn cacher(&mut self) {
         if let Some(g) = &self.gfx {
             g.window.set_visible(false);
+            if self.anim.take().is_some() {
+                opacite(hwnd(&g.window), None);
+            }
         }
         self.visible = false;
         if let Some(app) = self.app.as_mut() {
@@ -149,6 +196,20 @@ impl Runner {
                     gfx.renderer.render(&mut target, &prims, &out.textures_delta, out.pixels_per_point);
                 }
                 let _ = buf.present();
+            }
+            if let Some((t0, p)) = self.anim {
+                let t = (t0.elapsed().as_secs_f32() * 1000.0 / ANIM_MS).min(1.0);
+                let e = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t); // ease-out
+                let h = hwnd(&gfx.window);
+                if t >= 1.0 {
+                    gfx.window.set_outer_position(p);
+                    opacite(h, None);
+                    self.anim = None;
+                } else {
+                    gfx.window.set_outer_position(PhysicalPosition::new(p.x, p.y + ((1.0 - e) * 10.0) as i32));
+                    opacite(h, Some((e * 255.0) as u8));
+                    gfx.window.request_redraw();
+                }
             }
             if self.mesure && let Some(t) = self.ouvert_a.take() {
                 eprintln!("ouverture : {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
@@ -227,6 +288,9 @@ impl ApplicationHandler<Evt> for Runner {
             let mut a = app::App::new(&self.ctx, s, d);
             if let Some(e) = self.erreur.take() {
                 a.erreur(e);
+            }
+            if let Some(g) = &self.gfx {
+                dwm(hwnd(&g.window), a.pal.accent);
             }
             self.app = Some(a);
         }
@@ -418,6 +482,7 @@ fn main() {
         instance,
         proxy,
         images: 0,
+        anim: None,
         erreur,
     };
     let _ = event_loop.run_app(&mut runner);
